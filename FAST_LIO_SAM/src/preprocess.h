@@ -10,10 +10,17 @@ using namespace std;
 typedef pcl::PointXYZINormal PointType;
 typedef pcl::PointCloud<PointType> PointCloudXYZI;
 
-enum LID_TYPE{AVIA = 1, VELO16, OUST64, RS128}; //{1, 2, 3, 4}
+enum LID_TYPE{LIVOX = 1, VELO16, OUST64, RS128}; //{1, 2, 3, 4}
 enum Feature{Nor, Poss_Plane, Real_Plane, Edge_Jump, Edge_Plane, Wire, ZeroPoint};//未判断，可能平面，平面，跳跃边，平面交接边,细线
 enum Surround{Prev, Next};
 enum E_jump{Nr_nor, Nr_zero, Nr_180, Nr_inf, Nr_blind}; // 未判断，接近0度，接近180度，接近远端，接近近端
+
+enum LIVOX_TYPE
+{
+  LIVOX_CUS = 1,
+  LIVOX_ROS,
+  LIVOX_ROS_SKYLAND
+};
 
 //用于记录每个点的距离、角度、特征种类等属性
 struct orgtype
@@ -33,6 +40,39 @@ struct orgtype
     intersect = 2;
   }
 };
+
+namespace livox_ros
+{
+  struct EIGEN_ALIGN16 Point
+  {
+    PCL_ADD_POINT4D;                // 4D点坐标类型,xyz+padding,float padding用于填补位数,以满足存储对齐要求
+    float intensity;                // Reflectivity
+    uint8_t tag;                    // Livox point tag
+    uint8_t line;                   // Laser line id
+    uint8_t reflectivity;           // reflectivity, 0~255
+    uint32_t offset_time;           // offset time relative to the base time
+    PCL_ADD_RGB;                    // RGB
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // 进行内存对齐
+  };
+  struct EIGEN_ALIGN16 PointSkyland
+  {
+    PCL_ADD_POINT4D;                // 4D点坐标类型,xyz+padding,float padding用于填补位数,以满足存储对齐要求
+    float intensity;                // Reflectivity
+    uint8_t tag;                    // Livox point tag
+    uint8_t line;                   // Laser line id
+    double timestamp;           // offset time relative to the base time
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // 进行内存对齐
+  };
+}
+// 注册livox_ros的Point类型
+POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::Point,
+                                  (float, x, x)(float, y, y)(float, z, z)
+                                  (float, intensity, intensity)(std::uint8_t, tag, tag)(std::uint8_t, line, line)(std::uint8_t, reflectivity, reflectivity)(std::uint32_t, offset_time, offset_time)(float, rgb, rgb))
+// 注册livox_ros_skyland的Point类型
+POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::PointSkyland,
+                                  (float, x, x)(float, y, y)(float, z, z)
+                                  (float, intensity, intensity)(std::uint8_t, tag, tag)(std::uint8_t, line, line)(double, timestamp, timestamp))
+
 
 namespace velodyne_ros {
   struct EIGEN_ALIGN16 Point {
@@ -136,7 +176,7 @@ class Preprocess
   PointCloudXYZI pl_full, pl_corn, pl_surf; //储存全部点(特征提取或间隔采样后）、角点、面特征点
   PointCloudXYZI pl_buff[128]; //maximum 128 line lidar
   vector<orgtype> typess[128]; //maximum 128 line lidar
-  int lidar_type, point_filter_num, N_SCANS, SCAN_RATE;
+  int lidar_type,livox_type, point_filter_num, N_SCANS, SCAN_RATE;
   double blind; //xy平面距离，小于此阈值不计算特征
   bool feature_enabled, given_offset_time;
   ros::Publisher pub_full, pub_surf, pub_corn;
@@ -146,6 +186,7 @@ class Preprocess
   void avia_handler(const livox_ros_driver::CustomMsg::ConstPtr &msg);
   void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
   void velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
+  void livox_ros_skyland_handler(const sensor_msgs::PointCloud2::ConstPtr &msg); 
   void rs_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
   void give_feature(PointCloudXYZI &pl, vector<orgtype> &types); // 当前扫描线点云， 扫描点属性
   void pub_func(PointCloudXYZI &pl, const ros::Time &ct);

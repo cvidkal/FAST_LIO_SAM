@@ -2106,6 +2106,41 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     }
     solve_time += omp_get_wtime() - solve_start_;
 }
+// livox的pointcloud2格式数据的回调函数,将数据引入buffer中
+void livox_ros_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
+{
+    mtx_buffer.lock(); // 加锁
+    scan_count++;
+
+    // 如果当前扫描的lidar数据比上一次早,则lidar数据有误,需要将lidar数据缓存队列清空
+    if (msg->header.stamp.toSec() < last_timestamp_lidar)
+    {
+        ROS_ERROR("lidar loop back, clear buffer");
+        lidar_buffer.clear();
+    }
+
+    last_timestamp_lidar = msg->header.stamp.toSec(); // 记录最后一个雷达时间
+    // 如果不需要进行时间同步,而imu时间戳和雷达时间戳相差大于10s,则输出错误信息
+    if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty())
+    {
+        printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n", last_timestamp_imu, last_timestamp_lidar);
+    }
+    // time_sync_en为true时,当imu时间戳和雷达时间戳相差大于1s时,进行时间同步
+    if (time_sync_en && !timediff_set_flg && abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
+    {
+        timediff_set_flg = true;
+        timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu; // ????
+        printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
+    }
+    pcl::PointCloud<PointType>::Ptr ptr(new pcl::PointCloud<PointType>());
+    p_pre->process(msg, ptr);                         // 点云预处理
+    printf("Lidar data size: %d, time: %.3lf \n", (int)ptr->size(), msg->header.stamp.toSec());
+    lidar_buffer.push_back(ptr);                      // 点云存入缓冲区
+    time_buffer.push_back(msg->header.stamp.toSec()); // 时间存入缓冲区
+    last_timestamp_lidar = msg->header.stamp.toSec(); // 记录最后一个雷达时间
+    mtx_buffer.unlock();                              // 解锁
+    sig_buffer.notify_all();                          // 唤醒所有线程
+}
 
 int main(int argc, char **argv)
 {
@@ -2138,7 +2173,8 @@ int main(int argc, char **argv)
     nh.param<double>("mapping/b_gyr_cov", b_gyr_cov, 0.0001);
     nh.param<double>("mapping/b_acc_cov", b_acc_cov, 0.0001);
     nh.param<double>("preprocess/blind", p_pre->blind, 0.01);
-    nh.param<int>("preprocess/lidar_type", p_pre->lidar_type, AVIA);
+    nh.param<int>("preprocess/lidar_type", p_pre->lidar_type, LIVOX);
+    nh.param<int>("preprocess/livox_type", p_pre->livox_type, LIVOX_CUS);
     nh.param<int>("preprocess/scan_line", p_pre->N_SCANS, 16);
     nh.param<int>("preprocess/scan_rate", p_pre->SCAN_RATE, 10);
     nh.param<int>("point_filter_num", p_pre->point_filter_num, 2);
@@ -2265,7 +2301,7 @@ int main(int argc, char **argv)
         cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
 
     /*** ROS subscribe initialization ***/
-    ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA ? nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
+    ros::Subscriber sub_pcl = p_pre->lidar_type == LIVOX ? (p_pre->livox_type == LIVOX_CUS ? nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : nh.subscribe(lid_topic, 200000, livox_ros_cbk)) : nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
     ros::Subscriber sub_imu = nh.subscribe(imu_topic, 200000, imu_cbk);
     ros::Publisher pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100000);        //  world系下稠密点云
     ros::Publisher pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered_body", 100000);      //  body系下稠密点云
@@ -2501,8 +2537,13 @@ int main(int argc, char **argv)
     {
         string file_name = string("scans.pcd");
         string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
+        string dir_name = string(ROOT_DIR) + "PCD/";
+        if (!boost::filesystem::exists(dir_name))
+        {
+            boost::filesystem::create_directories(dir_name);
+        }
         pcl::PCDWriter pcd_writer;
-        cout << "current scan saved to /PCD/" << file_name << endl;
+        cout << "current scan saved to " << all_points_dir << endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
     }
 
